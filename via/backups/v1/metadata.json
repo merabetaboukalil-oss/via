@@ -1,0 +1,5 @@
+{
+  "name": "DWG Link Bridge",
+  "description": "Instantly link your PC and mobile browsers via QR code to transfer DWG file links for viewing.",
+  "requestFramePermissions": ["camera"]
+}
