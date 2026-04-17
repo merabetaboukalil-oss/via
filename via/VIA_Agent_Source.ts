@@ -1,5 +1,5 @@
 /**
- * VIA Local Link Agent - V1.5.0 (Stabilized Connection)
+ * VIA Local Link Agent - V1.5.1 (Interactive Dashboard)
  * 
  * INSTALLATION LOCALE (Optionnelle) :
  * npm install socket.io-client bonjour-service node-ssdp
@@ -11,6 +11,7 @@ import { io } from 'socket.io-client';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import http from 'http';
+import url from 'url';
 import os from 'os';
 import fs from 'fs';
 import path from 'path';
@@ -22,6 +23,30 @@ const ADMIN_PASS = 'admin123';
 const IPP_PORT = 631;
 
 let localPrinters: any[] = [];
+
+// --- LOGIQUE DE TEST PAGE ---
+async function triggerTestPage(printerName: string) {
+  const testContent = `
+    ==========================================
+    VIA CLOUD PRINTING - PAGE DE TEST
+    ==========================================
+    Date : ${new Date().toLocaleString()}
+    Imprimante : ${printerName}
+    Statut : CONNECTE
+    Agent : VIA Local Link V1.5.1
+    
+    Felicitation ! Votre pont d'impression 
+    VIA fonctionne correctement.
+    ==========================================
+  `;
+  
+  const target = localPrinters.find(p => p.name === printerName && p.status === 'online')?.name || 
+                 localPrinters.find(p => p.status === 'online')?.name || 
+                 'Canon G3010';
+                 
+  console.log(`[LOCAL-DASH] Déclenchement page de test pour : ${target}`);
+  await sendToPhysicalPrinter(Buffer.from(testContent), target);
+}
 
 // --- MOTEUR D'IMPRESSION RÉELLE ---
 async function sendToPhysicalPrinter(data: Buffer, printerName?: string) {
@@ -63,6 +88,22 @@ async function sendToPhysicalPrinter(data: Buffer, printerName?: string) {
 
 function createIppServer() {
   return http.createServer((req, res) => {
+    const parsedUrl = url.parse(req.url || '', true);
+    
+    // API : Page de Test Locale
+    if (parsedUrl.pathname === '/api/test' && parsedUrl.query.printer) {
+      triggerTestPage(parsedUrl.query.printer as string);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ status: 'ok' }));
+    }
+
+    // API : Forcer la synchro Cloud
+    if (parsedUrl.pathname === '/api/sync') {
+      updatePrinterList();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ status: 'ok' }));
+    }
+
     if (req.method === 'POST') {
       const chunks: any[] = [];
       req.on('data', chunk => chunks.push(chunk));
@@ -131,54 +172,80 @@ function createIppServer() {
       <html lang="fr">
         <head>
           <meta charset="UTF-8">
-          <title>VIA Agent V1.5.0</title>
+          <title>VIA Agent V1.5.1</title>
           <style>
             body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; padding: 40px; background: #0f172a; color: white; line-height: 1.6; }
             .container { max-width: 800px; margin: 0 auto; }
             h1 { color: #3b82f6; border-bottom: 2px solid #1e293b; padding-bottom: 15px; display: flex; align-items: center; gap: 10px; }
             .badge { background: #3b82f6; color: white; font-size: 0.4em; padding: 4px 8px; border-radius: 4px; vertical-align: middle; }
-            .printer-card { background: #1e293b; padding: 20px; border-radius: 12px; margin-bottom: 15px; border: 1px solid #334155; display: flex; justify-content: space-between; align-items: center; transition: transform 0.2s; }
-            .printer-card:hover { transform: translateY(-2px); border-color: #3b82f6; }
-            .printer-info { display: flex; flex-direction: column; }
-            .printer-name { font-size: 1.1em; font-weight: 600; color: #f8fafc; }
+            .printer-card { background: #1e293b; padding: 25px; border-radius: 12px; margin-bottom: 15px; border: 1px solid #334155; }
+            .printer-info-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+            .printer-name { font-size: 1.2em; font-weight: 600; color: #f8fafc; }
             .status { font-size: 0.9em; margin-top: 5px; display: flex; align-items: center; gap: 6px; }
             .status-dot { width: 10px; height: 10px; border-radius: 50%; }
             .online .status-dot { background: #10b981; box-shadow: 0 0 8px #10b981; }
             .offline .status-dot { background: #ef4444; }
-            .online { color: #10b981; }
-            .offline { color: #ef4444; }
+            .actions { display: flex; gap: 10px; }
+            button { cursor: pointer; padding: 8px 16px; border-radius: 6px; border: none; font-size: 0.85em; font-weight: 600; transition: all 0.2s; }
+            .btn-test { background: #334155; color: white; border: 1px solid #475569; }
+            .btn-test:hover { background: #475569; }
+            .btn-share { background: #3b82f6; color: white; }
+            .btn-share:hover { background: #2563eb; transform: scale(1.02); }
             .footer { margin-top: 50px; font-size: 0.85em; color: #64748b; border-top: 1px solid #1e293b; padding-top: 20px; }
             .url-box { background: #020617; padding: 10px; border-radius: 6px; font-family: monospace; color: #94a3b8; border: 1px solid #1e293b; }
+            .toast { position: fixed; bottom: 20px; right: 20px; background: #10b981; color: white; padding: 12px 24px; border-radius: 8px; display: none; }
           </style>
+          <script>
+            async function doAction(endpoint, params = '') {
+              try {
+                const res = await fetch(endpoint + (params ? '?' + params : ''));
+                if (res.ok) {
+                  showToast("Action effectuée avec succès !");
+                  if (endpoint.includes('sync')) setTimeout(() => location.reload(), 1000);
+                }
+              } catch (e) { alert("Erreur lors de l'action"); }
+            }
+            function showToast(msg) {
+              const t = document.getElementById('toast');
+              t.innerText = msg;
+              t.style.display = 'block';
+              setTimeout(() => t.style.display = 'none', 3000);
+            }
+          </script>
         </head>
         <body>
           <div class="container">
-            <h1>VIA Agent <span class="badge">V1.5.0</span></h1>
+            <h1>VIA Agent <span class="badge">V1.5.1</span></h1>
             <p>Statut du Pont : <strong>ACTIF</strong> sur <strong>${os.hostname()}</strong></p>
             
-            <h2 style="margin-top: 40px; color: #94a3b8; font-size: 1em; text-transform: uppercase; letter-spacing: 1px;">Imprimantes Partagées (${localPrinters.length})</h2>
+            <h2 style="margin-top: 40px; color: #94a3b8; font-size: 1em; text-transform: uppercase; letter-spacing: 1px;">Gestion des Imprimantes</h2>
             
-            ${localPrinters.length === 0 ? '<p style="color: #64748b;">Aucune imprimante détectée pour le moment...</p>' : localPrinters.map(p => `
+            ${localPrinters.length === 0 ? '<p style="color: #64748b;">Aucune imprimante détectée...</p>' : localPrinters.map(p => `
               <div class="printer-card">
-                <div class="printer-info">
-                  <span class="printer-name">${p.name}</span>
-                  <div class="status ${p.status}">
-                    <div class="status-dot"></div>
-                    ${p.status === 'online' ? 'Prête à imprimer' : 'Hors ligne'}
+                <div class="printer-info-row">
+                  <div>
+                    <span class="printer-name">${p.name}</span>
+                    <div class="status ${p.status}">
+                      <div class="status-dot"></div>
+                      ${p.status === 'online' ? 'Partagée sur VIA' : 'Hors ligne'}
+                    </div>
+                  </div>
+                  <div class="actions">
+                    <button class="btn-test" onclick="doAction('/api/test', 'printer=${encodeURIComponent(p.name)}')">Page de Test</button>
+                    <button class="btn-share" onclick="doAction('/api/sync')">Synchroniser / Partager</button>
                   </div>
                 </div>
                 <div style="font-size: 0.8em; color: #64748b;">
-                  Jobs en attente : ${p.jobs || 0}
+                  Jobs système en cours : ${p.jobs || 0}
                 </div>
               </div>
             `).join('')}
             
             <div class="footer">
-              <p>Lien d'impression IPP local (pour ajout manuel Windows) :</p>
-              <div class="url-box">http://localhost:631/ipp/print</div>
-              <p style="margin-top: 15px;">Le pont est également diffusé via Bonjour et SSDP pour une détection automatique.</p>
+              <p>Lien IPP Direct : <span class="url-box">http://localhost:631/ipp/print</span></p>
             </div>
           </div>
+          <div id="toast" class="toast"></div>
         </body>
       </html>
     `;
@@ -222,7 +289,7 @@ socket.on('print_test_page', async ({ printerName }) => {
     Date : ${new Date().toLocaleString()}
     Imprimante : ${printerName}
     Statut : CONNECTE
-    Agent : VIA Local Link V1.5.0
+    Agent : VIA Local Link V1.5.1
     
     Felicitation ! Votre pont d'impression 
     VIA fonctionne correctement.
@@ -274,7 +341,7 @@ async function updatePrinterList() {
 
 const server = createIppServer();
 server.listen(IPP_PORT, '0.0.0.0', async () => {
-  console.log(`\x1b[32m[NETWORK] Agent V1.5.0 prêt sur http://localhost:${IPP_PORT}/ipp/print\x1b[0m`);
+  console.log(`\x1b[32m[NETWORK] Agent V1.5.1 prêt sur http://localhost:${IPP_PORT}/ipp/print\x1b[0m`);
   
   // --- DÉCOUVERTE RÉSEAU (mDNS / Bonjour) ---
   try {
